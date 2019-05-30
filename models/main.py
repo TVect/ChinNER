@@ -4,7 +4,8 @@ import tensorflow as tf
 import tf_metrics
 import functools
 import data_api
-from tensorflow.python.training.training_util import global_step
+from data_utils import iobes_iob
+from utils import test_ner
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -13,7 +14,7 @@ flags.DEFINE_integer("seg_dim", 20, "Embedding size for segmentation, 0 if not u
 flags.DEFINE_integer("char_dim", 100, "Embedding size for characters")
 flags.DEFINE_string("tag_schema", "iobes", "tagging schema iobes or iob")
 flags.DEFINE_integer("hidden_units", 32, "hidden units")
-flags.DEFINE_integer("num_lstm_layers", 1, "num of lstm layers")
+flags.DEFINE_integer("num_lstm_layers", 2, "num of lstm layers")
 
 # configurations for training
 flags.DEFINE_float("clip", 5.0, "Gradient clip")
@@ -25,9 +26,9 @@ flags.DEFINE_boolean("zeros", False, "Wither replace digits with zero")
 flags.DEFINE_boolean("lower", True, "Wither lower case")
 
 flags.DEFINE_integer("max_epoch", 200, "maximum training epochs")
-flags.DEFINE_integer("steps_check", 100, "steps per checkpoint")
-flags.DEFINE_integer("steps_summary", 20, "steps per summary")
-flags.DEFINE_integer("steps_logging", 20, "steps per summary")
+flags.DEFINE_integer("steps_check", 500, "steps per checkpoint")
+flags.DEFINE_integer("steps_summary", 50, "steps per summary")
+flags.DEFINE_integer("steps_logging", 50, "steps per summary")
 flags.DEFINE_integer("batch_size", 32, "batch size")
 # flags.DEFINE_integer("epochs_between_evals", 1, "The number of training epochs to run between evaluations.")
 
@@ -51,16 +52,20 @@ train_data, dev_data, test_data = data_api.load_msra_data(data_dir=FLAGS.data_di
 with open(FLAGS.map_file, "rb") as f:
     char_to_id, id_to_char, tag_to_id, id_to_tag = pickle.load(f)
 
-def input_fn(in_data):
+def input_fn(in_data, shuffle=False):
+    
     def data_generator(datas):
         for item in datas:
             yield item[1], item[2], item[3]
 
     data = tf.data.Dataset.from_generator(generator=functools.partial(data_generator, in_data), 
                                           output_types=(tf.int32, tf.int32, tf.int32))
-    data = data.shuffle(10000).repeat(1).padded_batch(batch_size=FLAGS.batch_size, 
-                                                      padded_shapes=([None], [None], [None]))
-
+    if shuffle:
+        data = data.shuffle(10000).padded_batch(
+            batch_size=FLAGS.batch_size, padded_shapes=([None], [None], [None])).prefetch(1)
+    else:
+        data = data.padded_batch(
+            batch_size=FLAGS.batch_size, padded_shapes=([None], [None], [None])).prefetch(1)
     iterator = data.make_one_shot_iterator()
     chars, segs, tags = iterator.get_next()
     features = {"chars": chars, "segs": segs}
@@ -111,7 +116,8 @@ def model_fn(features, labels, mode, params):
     predictions, _ = tf.contrib.crf.crf_decode(dense_output, transition_params, in_lengths)
     
     if mode == tf.estimator.ModeKeys.PREDICT:
-        spec = tf.estimator.EstimatorSpec(mode=mode, predictions=predictions)
+        spec = tf.estimator.EstimatorSpec(mode=mode, 
+                                          predictions={"preds": predictions})
     else:
         log_likelihood, _ = tf.contrib.crf.crf_log_likelihood(
             dense_output, labels, in_lengths, transition_params=transition_params)
@@ -168,9 +174,32 @@ model = tf.estimator.Estimator(model_fn=model_fn,
                                model_dir=FLAGS.ckpt_path, 
                                config=cfg)
 
+def eval_by_conlleval(in_data):
+    results = []
+    preds = model.predict(input_fn=functools.partial(input_fn, in_data=in_data))
+    for idx, item in enumerate(zip(in_data, preds)):
+        chars = item[0][0] 
+        labels = item[0][-1]
+    
+        gold = iobes_iob([id_to_tag[int(x)] for x in labels])
+        pred = iobes_iob([id_to_tag[int(x)] for x in item[1]["preds"][:len(chars)]])
+        
+        result = [" ".join([char_item, gold_item, pred_item]) 
+                  for char_item, gold_item, pred_item in zip(chars, gold, pred)]
+        
+        results.append(result)
+    
+    eval_lines = test_ner(results, "./result")
+    
+    for line in eval_lines:
+        tf.logging.info(line)
+
 # Train and evaluate model.
 for epoch_id in range(FLAGS.max_epoch):
     tf.logging.info("================= epoch_id:{} =================".format(epoch_id))
-    model.train(input_fn=functools.partial(input_fn, in_data=train_data))
+    model.train(input_fn=functools.partial(input_fn, in_data=train_data, shuffle=True))
     eval_results = model.evaluate(input_fn=functools.partial(input_fn, in_data=dev_data))
     print('\nEvaluation results:\n\t%s\n' % eval_results)
+    
+    eval_by_conlleval(dev_data)
+    eval_by_conlleval(test_data)
