@@ -4,7 +4,7 @@ import tensorflow as tf
 import tf_metrics
 import functools
 import data_api
-from data_utils import iobes_iob
+from data_utils import iobes_iob, load_word2vec
 from utils import test_ner
 
 tf.logging.set_verbosity(tf.logging.INFO)
@@ -26,10 +26,10 @@ flags.DEFINE_boolean("zeros", False, "Wither replace digits with zero")
 flags.DEFINE_boolean("lower", True, "Wither lower case")
 
 flags.DEFINE_integer("max_epoch", 200, "maximum training epochs")
-flags.DEFINE_integer("steps_check", 500, "steps per checkpoint")
-flags.DEFINE_integer("steps_summary", 50, "steps per summary")
-flags.DEFINE_integer("steps_logging", 50, "steps per summary")
-flags.DEFINE_integer("batch_size", 32, "batch size")
+flags.DEFINE_integer("steps_check", 1000, "steps per checkpoint")
+flags.DEFINE_integer("steps_summary", 100, "steps per summary")
+flags.DEFINE_integer("steps_logging", 100, "steps per summary")
+flags.DEFINE_integer("batch_size", 20, "batch size")
 # flags.DEFINE_integer("epochs_between_evals", 1, "The number of training epochs to run between evaluations.")
 
 flags.DEFINE_string("ckpt_path", "./checkpoints_bilstm", "Path to save model")
@@ -61,11 +61,11 @@ def input_fn(in_data, shuffle=False):
     data = tf.data.Dataset.from_generator(generator=functools.partial(data_generator, in_data), 
                                           output_types=(tf.int32, tf.int32, tf.int32))
     if shuffle:
-        data = data.shuffle(10000).padded_batch(
-            batch_size=FLAGS.batch_size, padded_shapes=([None], [None], [None])).prefetch(1)
+        data = data.shuffle(15000).repeat(1).padded_batch(
+            batch_size=FLAGS.batch_size, padded_shapes=([None], [None], [None])).prefetch(FLAGS.batch_size)
     else:
-        data = data.padded_batch(
-            batch_size=FLAGS.batch_size, padded_shapes=([None], [None], [None])).prefetch(1)
+        data = data.repeat(1).padded_batch(
+            batch_size=FLAGS.batch_size, padded_shapes=([None], [None], [None])).prefetch(FLAGS.batch_size)
     iterator = data.make_one_shot_iterator()
     chars, segs, tags = iterator.get_next()
     features = {"chars": chars, "segs": segs}
@@ -85,8 +85,11 @@ def model_fn(features, labels, mode, params):
 #     in_lengths = features["in_lengths"]
     length = tf.reduce_sum(tf.sign(tf.abs(char_inputs)), reduction_indices=1)
     in_lengths = tf.cast(length, tf.int32)
-
-    char_lookup = tf.get_variable(name="char_embedding", 
+    
+    if params["pre_emb"]:
+        char_lookup = tf.Variable(params["emb_matrix"], name="char_embedding")
+    else:
+        char_lookup = tf.get_variable(name="char_embedding", 
                                   shape=[params["num_chars"], params["char_dim"]], 
                                   initializer=tf.contrib.layers.xavier_initializer())
     char_emb = tf.nn.embedding_lookup(char_lookup, char_inputs)
@@ -97,6 +100,7 @@ def model_fn(features, labels, mode, params):
     embed = tf.concat([char_emb, seg_emb], axis=-1)
 
     lstm_input = tf.layers.dropout(embed, rate=params["dropout_rate"])
+    '''
     def gen_lstm_cell():
         return tf.nn.rnn_cell.DropoutWrapper(
             tf.contrib.rnn.LSTMCell(num_units=int((params["char_dim"] + params["seg_dim"]) / 2), 
@@ -108,11 +112,18 @@ def model_fn(features, labels, mode, params):
         inputs=lstm_input, 
         sequence_length=in_lengths,
         dtype=tf.float32)
-    dense_hidden = tf.layers.dense(lstm_output, params["hidden_units"], activation=tf.nn.relu)
-    dense_output = tf.layers.dense(dense_hidden, params["num_tags"])
+    '''
+    fw_cell = tf.contrib.rnn.CoupledInputForgetGateLSTMCell(100, use_peepholes=True, initializer=tf.contrib.layers.xavier_initializer(), state_is_tuple=True)
+    bw_cell = tf.contrib.rnn.CoupledInputForgetGateLSTMCell(100, use_peepholes=True, initializer=tf.contrib.layers.xavier_initializer(), state_is_tuple=True)
+    outputs, final_states = tf.nn.bidirectional_dynamic_rnn(fw_cell, bw_cell, lstm_input, dtype=tf.float32, sequence_length=in_lengths)
+    lstm_output = tf.concat(outputs, axis=2)
+
+    dense_hidden = tf.layers.dense(lstm_output, 100, activation=tf.nn.tanh, kernel_initializer=tf.contrib.layers.xavier_initializer())
+    dense_output = tf.layers.dense(dense_hidden, params["num_tags"], kernel_initializer=tf.contrib.layers.xavier_initializer())
     
     transition_params = tf.get_variable(name="transitions", 
-                                        shape=[params["num_tags"], params["num_tags"]])
+                                        shape=[params["num_tags"], params["num_tags"]], 
+                                        initializer=tf.contrib.layers.xavier_initializer())
     predictions, _ = tf.contrib.crf.crf_decode(dense_output, transition_params, in_lengths)
     
     if mode == tf.estimator.ModeKeys.PREDICT:
@@ -134,8 +145,9 @@ def model_fn(features, labels, mode, params):
         if mode == tf.estimator.ModeKeys.EVAL:
             spec = tf.estimator.EstimatorSpec(mode=mode, loss=loss, eval_metric_ops=metrics)
         elif mode == tf.estimator.ModeKeys.TRAIN:
-            train_op = tf.train.AdamOptimizer(learning_rate=params["learning_rate"])\
-                    .minimize(loss, global_step=tf.train.get_or_create_global_step())
+            train_op = tf.train.AdamOptimizer(learning_rate=params["learning_rate"])
+            train_op = tf.contrib.estimator.clip_gradients_by_norm(train_op, params["clip"])
+            train_op = train_op.minimize(loss, global_step=tf.train.get_or_create_global_step())
             logging_hook = tf.train.LoggingTensorHook(
                 {"loss" : loss, 
                  "accuracy" : metrics["accuracy"][1], 
@@ -144,11 +156,12 @@ def model_fn(features, labels, mode, params):
                  "f1": metrics["f1"][1]}, 
                 every_n_iter=FLAGS.steps_logging)
             
+            '''
             tf.summary.scalar('accuracy', metrics["accuracy"][1])
             tf.summary.scalar('precision', metrics["precision"][1])
             tf.summary.scalar('recall', metrics["recall"][1])
             tf.summary.scalar('f1', metrics["f1"][1])
-            
+            '''
             spec = tf.estimator.EstimatorSpec(mode=mode, loss=loss, 
                                               train_op=train_op, 
                                               eval_metric_ops=metrics, 
@@ -165,10 +178,16 @@ params = {"num_chars": len(char_to_id),
           "num_lstm_layers": FLAGS.num_lstm_layers, 
           "hidden_units": FLAGS.hidden_units, 
           "num_tags": len(tag_to_id), 
-          "learning_rate": FLAGS.learning_rate}
+          "learning_rate": FLAGS.learning_rate,
+          "clip": FLAGS.clip}
+
+if FLAGS.pre_emb:
+    emb_matrix = load_word2vec(FLAGS.emb_file, id_to_char, FLAGS.char_dim, np.random.randn(len(char_to_id), FLAGS.char_dim))
+    params["emb_matrix"] = emb_matrix.astype(np.float32)
+    params["pre_emb"] = True
 
 cfg = tf.estimator.RunConfig(save_checkpoints_steps=FLAGS.steps_check, 
-                             save_summary_steps=FLAGS.steps_summary)
+                             save_summary_steps=FLAGS.steps_summary, log_step_count_steps=1000)
 model = tf.estimator.Estimator(model_fn=model_fn, 
                                params=params, 
                                model_dir=FLAGS.ckpt_path, 
