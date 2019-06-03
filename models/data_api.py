@@ -26,6 +26,7 @@ def load_msra_data(data_dir,
 
     # Use selected tagging scheme (IOB / IOBES)
     update_tag_scheme(train_sentences, flag_tag_schema)
+    update_tag_scheme(dev_sentences, flag_tag_schema)
     update_tag_scheme(test_sentences, flag_tag_schema)
 
     # create maps if not exist
@@ -53,12 +54,3 @@ def load_msra_data(data_dir,
     dev_data = prepare_dataset(dev_sentences, char_to_id, tag_to_id, flag_lower)
     test_data = prepare_dataset(test_sentences, char_to_id, tag_to_id, flag_lower)
     return train_data, dev_data, test_data
-
-
-if __name__ == "__main__":
-    train_data, dev_data, test_data = load_msra_data(data_dir="../dataset/msra")
-    from model import MyModel
-    my_model = MyModel()
-    my_model.summary()
-    my_model.compile(optimizer='adam',
-                     loss=my_model.output.loss_function)
