@@ -98,8 +98,10 @@ def model_fn(features, labels, mode, params):
                                  initializer=tf.contrib.layers.xavier_initializer())
     seg_emb = tf.nn.embedding_lookup(seg_lookup, seg_inputs)
     embed = tf.concat([char_emb, seg_emb], axis=-1)
-
-    lstm_input = tf.layers.dropout(embed, rate=params["dropout_rate"])
+    
+    is_training = (mode == tf.estimator.ModeKeys.TRAIN)
+    lstm_input = tf.layers.dropout(embed, rate=params["dropout_rate"], 
+                                   training=is_training)
     '''
     def gen_lstm_cell():
         return tf.nn.rnn_cell.DropoutWrapper(
