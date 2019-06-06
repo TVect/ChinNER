@@ -1,8 +1,8 @@
 import os
 import collections
-from bert import tokenization
 import tensorflow as tf
-from bert import modeling, optimization
+from .bert import tokenization, modeling, optimization
+
 
 tf.enable_eager_execution()
 tf.logging.set_verbosity(tf.logging.INFO)
@@ -11,24 +11,28 @@ flags = tf.flags
 
 FLAGS = flags.FLAGS
 
+FILE_HOME = os.path.abspath(os.path.dirname(__file__))
+
 ## Required parameters
 flags.DEFINE_string(
-    "data_dir", "../../dataset/msra", 
+    "data_dir", os.path.join(FILE_HOME, "../../dataset/msra"), 
     "The input data dir")
 flags.DEFINE_string(
-    "bert_config_file", "./bert_models/chinese_L-12_H-768_A-12/bert_config.json", 
+    "bert_config_file", 
+    os.path.join(FILE_HOME, "./bert_models/chinese_L-12_H-768_A-12/bert_config.json"), 
     "The config json file corresponding to the pre-trained BERT model. "
     "This specifies the model architecture.")
 flags.DEFINE_string(
-    "vocab_file", "./bert_models/chinese_L-12_H-768_A-12/vocab.txt",
+    "vocab_file", 
+    os.path.join(FILE_HOME, "./bert_models/chinese_L-12_H-768_A-12/vocab.txt"),
     "The vocabulary file that the BERT model was trained on.")
 flags.DEFINE_string(
-    "output_dir", "./output",
+    "output_dir", os.path.join(FILE_HOME, "./output"),
     "The output directory where the model checkpoints will be written.")
 
 ## Other parameters
 flags.DEFINE_string(
-    "init_checkpoint", "./bert_models/chinese_L-12_H-768_A-12/bert_model.ckpt",
+    "init_checkpoint", os.path.join(FILE_HOME, "./bert_models/chinese_L-12_H-768_A-12/bert_model.ckpt"),
     "Initial checkpoint (usually from a pre-trained BERT model).")
 flags.DEFINE_bool(
     "do_lower_case", True,
@@ -113,14 +117,12 @@ class InputFeatures(object):
         self.label_ids = label_ids
 
 
-def convert_single_example(ex_index, example, tag2id, max_seq_length,
+def convert_single_example(ex_index, example, label_list, max_seq_length,
                            tokenizer):
     """Converts a single `InputExample` into a single `InputFeatures`."""
-    # tokens = example.text
-    # labels = example.label
-    # example: [[token1, label1], [token2, label2], ...]
-    tokens, labels = list(zip(*example))
-
+    tokens = example.text
+    labels = example.label
+    tag2id = {tag: id for id, tag in enumerate(label_list)}
     # 序列截断
     if len(tokens) >= max_seq_length - 1:
         tokens = tokens[0:(max_seq_length - 2)]  # -2 的原因是因为序列需要加一个句首和句尾标志
@@ -330,23 +332,16 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
 def main():
     vocab_file = FLAGS.vocab_file
     tokenizer = tokenization.FullTokenizer(vocab_file=vocab_file, do_lower_case=FLAGS.do_lower_case)
-    
-    from data_api import load_msra_data
-    train_examples, dev_examples, test_examples = load_msra_data(FLAGS.data_dir, 
-                   flag_lower=FLAGS.do_lower_case, 
-                   flag_zeros=False, 
-                   flag_tag_schema="iobes")
-    from loader import tag_mapping
-    _t, tag_to_id, id_to_tag = tag_mapping(train_examples)
+
+    from dataset.msra_ner import MSRA_NER
+    msra = MSRA_NER()
+    label_list = msra.get_labels()
+    train_examples = msra.get_train_examples()
+    dev_examples = msra.get_dev_examples()
+    test_examples = msra.get_test_examples()
     
     num_train_steps = int(len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
-    
-    '''
-    dev_file = os.path.join(FLAGS.output_dir, "dev.tf_record")    
-    file_based_convert_examples_to_features(
-        dev_examples, tag_to_id, FLAGS.max_seq_length, tokenizer, dev_file)
-    '''
 
     if not FLAGS.do_train and not FLAGS.do_eval:
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
@@ -357,7 +352,8 @@ def main():
             "was only trained up to sequence length %d" %
             (FLAGS.max_seq_length, bert_config.max_position_embeddings))
 
-    label_list = list(tag_to_id.keys())
+    if not tf.gfile.Exists(FLAGS.output_dir):
+        tf.gfile.MakeDirs(FLAGS.output_dir)
 
     model_fn = model_fn_builder(
             bert_config=bert_config,
@@ -377,7 +373,7 @@ def main():
     if FLAGS.do_train:
         train_file = os.path.join(FLAGS.output_dir, "train.tf_record")    
         file_based_convert_examples_to_features(
-            train_examples, tag_to_id, FLAGS.max_seq_length, tokenizer, train_file)
+            train_examples, label_list, FLAGS.max_seq_length, tokenizer, train_file)
         train_input_fn = file_based_input_fn_builder(
             input_file=train_file,
             seq_length=FLAGS.max_seq_length,
@@ -387,10 +383,10 @@ def main():
     else:
         dev_file = os.path.join(FLAGS.output_dir, "dev.tf_record")    
         file_based_convert_examples_to_features(
-            dev_examples, tag_to_id, FLAGS.max_seq_length, tokenizer, dev_file)
+            dev_examples, label_list, FLAGS.max_seq_length, tokenizer, dev_file)
         test_file = os.path.join(FLAGS.output_dir, "test.tf_record")    
         file_based_convert_examples_to_features(
-            test_examples, tag_to_id, FLAGS.max_seq_length, tokenizer, test_file)
+            test_examples, label_list, FLAGS.max_seq_length, tokenizer, test_file)
         
         dev_input_fn = file_based_input_fn_builder(
             input_file=dev_file,
@@ -404,25 +400,22 @@ def main():
             drop_remainder=True)
         preds = estimator.predict(input_fn=test_input_fn)
         
-        from data_utils import iobes_iob
-        from utils import test_ner
+        from utils.evaluate import test_ner
         results = []
         for idx, item in enumerate(zip(test_examples, preds)):
-            chars = [char for char, _ in item[0]] 
-            gold = [label for _, label in item[0]]
-            pred = iobes_iob([id_to_tag[int(x)] for x in item[1][1:len(gold)+1]])
+            chars = item[0].text
+            gold = item[0].label
+            pred = [label_list[int(x)] for x in item[1][1:len(gold)+1]]
         
             result = [" ".join([char_item, gold_item, pred_item]) 
                   for char_item, gold_item, pred_item in zip(chars, gold, pred)]
         
             results.append(result)
     
-        eval_lines = test_ner(results, "./result")
+        eval_lines = test_ner(results, FLAGS.output_dir)
     
         for line in eval_lines:
             tf.logging.info(line)
-
-
 
 if __name__ == "__main__":
     main()
