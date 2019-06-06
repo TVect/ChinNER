@@ -166,7 +166,7 @@ def convert_single_example(ex_index, example, label_list, max_seq_length,
     return feature
     
 def file_based_convert_examples_to_features(
-    examples, tag2id, max_seq_length, tokenizer, output_file):
+    examples, label_list, max_seq_length, tokenizer, output_file):
     """Convert a set of `InputExample`s to a TFRecord file."""
     
     writer = tf.python_io.TFRecordWriter(output_file)
@@ -176,7 +176,7 @@ def file_based_convert_examples_to_features(
             tf.logging.info("Writing example %d of %d" % (ex_index, len(examples)))
 
         features = collections.OrderedDict()
-        feature = convert_single_example(ex_index, example, tag2id, max_seq_length, tokenizer)
+        feature = convert_single_example(ex_index, example, label_list, max_seq_length, tokenizer)
         features["input_ids"] = tf.train.Feature(
             int64_list=tf.train.Int64List(value=feature.input_ids))
         features["input_mask"] = tf.train.Feature(

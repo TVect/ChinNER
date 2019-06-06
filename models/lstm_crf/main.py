@@ -1,11 +1,14 @@
-import pickle
+import os
 import numpy as np
 import tensorflow as tf
 import tf_metrics
 import functools
-import data_api
-from data_utils import iobes_iob, load_word2vec
-from utils import test_ner
+import codecs
+from models.lstm_crf import data_api
+from dataset.msra_ner import MSRA_NER
+from utils.evaluate import test_ner
+
+FILE_HOME = os.path.abspath(os.path.dirname(__file__))
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -32,46 +35,21 @@ flags.DEFINE_integer("steps_logging", 100, "steps per summary")
 flags.DEFINE_integer("batch_size", 20, "batch size")
 # flags.DEFINE_integer("epochs_between_evals", 1, "The number of training epochs to run between evaluations.")
 
-flags.DEFINE_string("ckpt_path", "./checkpoints_bilstm", "Path to save model")
-flags.DEFINE_string("log_file", "train.log", "File for log")
-flags.DEFINE_string("map_file", "maps.pkl", "file for maps")
-flags.DEFINE_string("script", "conlleval", "evaluation script")
-flags.DEFINE_string("result_path", "result", "Path for results")
-flags.DEFINE_string("emb_file", "wiki_100.utf8", "Path for pre_trained embedding")
-flags.DEFINE_string("data_dir", "../dataset/msra", "Path for train data")
+flags.DEFINE_string("ckpt_path", 
+                    os.path.join(FILE_HOME, "ckpt_bilstm"), 
+                    "Path to save model")
+flags.DEFINE_string("log_file", 
+                    os.path.join(FILE_HOME, "train.log"), 
+                    "File for log")
+flags.DEFINE_string("map_file", 
+                    os.path.join(FILE_HOME, "maps.pkl"), 
+                    "file for maps")
+flags.DEFINE_string("emb_file", 
+                    os.path.join(FILE_HOME, "wiki_100.utf8"), 
+                    "Path for pre_trained embedding")
+
 
 FLAGS = tf.app.flags.FLAGS
-
-train_data, dev_data, test_data = data_api.load_msra_data(data_dir=FLAGS.data_dir, 
-                                                          flag_lower=FLAGS.lower,
-                                                          flag_zeros=FLAGS.zeros,
-                                                          flag_tag_schema=FLAGS.tag_schema,
-                                                          flag_map_file=FLAGS.map_file, 
-                                                          flag_emb_file=FLAGS.emb_file)
-
-with open(FLAGS.map_file, "rb") as f:
-    char_to_id, id_to_char, tag_to_id, id_to_tag = pickle.load(f)
-
-def input_fn(in_data, shuffle=False):
-    
-    def data_generator(datas):
-        for item in datas:
-            yield item[1], item[2], item[3]
-
-    data = tf.data.Dataset.from_generator(generator=functools.partial(data_generator, in_data), 
-                                          output_types=(tf.int32, tf.int32, tf.int32))
-    if shuffle:
-        data = data.shuffle(15000).repeat(1).padded_batch(
-            batch_size=FLAGS.batch_size, padded_shapes=([None], [None], [None])).prefetch(FLAGS.batch_size)
-    else:
-        data = data.repeat(1).padded_batch(
-            batch_size=FLAGS.batch_size, padded_shapes=([None], [None], [None])).prefetch(FLAGS.batch_size)
-    iterator = data.make_one_shot_iterator()
-    chars, segs, tags = iterator.get_next()
-    features = {"chars": chars, "segs": segs}
-    labels = {"tags": tags}  # Could be None in your predict_input_fn
-    labels = tags
-    return features, labels
 
 def model_fn(features, labels, mode, params):
     '''
@@ -80,8 +58,8 @@ def model_fn(features, labels, mode, params):
     @param mode: TRAIN | EVAL | PREDICT
     @param params: User-defined hyper-parameters, e.g. learning-rate
     '''
-    char_inputs = features["chars"]
-    seg_inputs = features["segs"]
+    char_inputs = features["char_ids"]
+    seg_inputs = features["seg_ids"]
 #     in_lengths = features["in_lengths"]
     length = tf.reduce_sum(tf.sign(tf.abs(char_inputs)), reduction_indices=1)
     in_lengths = tf.cast(length, tf.int32)
@@ -137,7 +115,7 @@ def model_fn(features, labels, mode, params):
         loss = tf.reduce_mean(-log_likelihood)
         weights = tf.sequence_mask(in_lengths)
         num_tags = params["num_tags"]
-        indices = [id for tag, id in tag_to_id.items() if tag != 'O']
+        indices = list(range(1, num_tags))
         metrics = {
             'accuracy': tf.metrics.accuracy(labels, predictions, weights), 
             'precision': tf_metrics.precision(labels, predictions, num_tags, indices, weights), 
@@ -171,56 +149,93 @@ def model_fn(features, labels, mode, params):
 
     return spec
 
-params = {"num_chars": len(char_to_id), 
-          "num_segs": 4, 
-          "char_dim": len(tag_to_id), 
-          "seg_dim": FLAGS.seg_dim, 
-          "dropout_rate": FLAGS.dropout, 
-          "rnn_dropout_rate": FLAGS.dropout, 
-          "num_lstm_layers": FLAGS.num_lstm_layers, 
-          "hidden_units": FLAGS.hidden_units, 
-          "num_tags": len(tag_to_id), 
-          "learning_rate": FLAGS.learning_rate,
-          "clip": FLAGS.clip}
 
-if FLAGS.pre_emb:
-    emb_matrix = load_word2vec(FLAGS.emb_file, id_to_char, FLAGS.char_dim, np.random.randn(len(char_to_id), FLAGS.char_dim))
-    params["emb_matrix"] = emb_matrix.astype(np.float32)
-    params["pre_emb"] = True
+def main(args):
+    if not tf.gfile.Exists(FLAGS.ckpt_path):
+        tf.gfile.MakeDirs(FLAGS.ckpt_path)
 
-cfg = tf.estimator.RunConfig(save_checkpoints_steps=FLAGS.steps_check, 
-                             save_summary_steps=FLAGS.steps_summary, log_step_count_steps=1000)
-model = tf.estimator.Estimator(model_fn=model_fn, 
-                               params=params, 
-                               model_dir=FLAGS.ckpt_path, 
-                               config=cfg)
-
-def eval_by_conlleval(in_data):
-    results = []
-    preds = model.predict(input_fn=functools.partial(input_fn, in_data=in_data))
-    for idx, item in enumerate(zip(in_data, preds)):
-        chars = item[0][0] 
-        labels = item[0][-1]
+    msra = MSRA_NER(tagging_schema="iobes")
+    train_examples = msra.get_train_examples()
+    dev_examples = msra.get_dev_examples()
+    test_examples = msra.get_test_examples()
     
-        gold = iobes_iob([id_to_tag[int(x)] for x in labels])
-        pred = iobes_iob([id_to_tag[int(x)] for x in item[1]["preds"][:len(chars)]])
+    emb_file = "D:/00-Repositories/ChinNER/models/lstm_crf/wiki_100.utf8"
+    with codecs.open(emb_file, mode='r', encoding="utf8") as fr:
+        _, dim = fr.readline().split()
+        emb_tokens = ["<UNK>", "<PAD>"]
+        emb_matrix = [np.random.randn(int(dim)), np.random.randn(int(dim))]
+        contents = [line.strip().split() for line in fr]
+        emb_tokens.extend([content[0] for content in contents])
+        emb_matrix.extend([list(map(float, content[1:])) for content in contents])
+        emb_matrix = np.array(emb_matrix)
+
+    params = {"num_chars": len(emb_tokens), 
+              "num_segs": 4,  
+              "char_dim": FLAGS.char_dim,
+              "seg_dim": FLAGS.seg_dim, 
+              "dropout_rate": FLAGS.dropout, 
+              "rnn_dropout_rate": FLAGS.dropout, 
+              "num_lstm_layers": FLAGS.num_lstm_layers, 
+              "hidden_units": FLAGS.hidden_units, 
+              "num_tags": msra.num_labels, 
+              "learning_rate": FLAGS.learning_rate,
+              "clip": FLAGS.clip}
+    
+    if FLAGS.pre_emb:
+        params["emb_matrix"] = emb_matrix.astype(np.float32)
+        params["pre_emb"] = True
+    
+    cfg = tf.estimator.RunConfig(save_checkpoints_steps=FLAGS.steps_check, 
+                                 save_summary_steps=FLAGS.steps_summary, 
+                                 log_step_count_steps=FLAGS.steps_logging)
+    model = tf.estimator.Estimator(model_fn=model_fn, 
+                                   params=params, 
+                                   model_dir=FLAGS.ckpt_path, 
+                                   config=cfg)
+    label_list = msra.get_labels()
+    '''
+    data_api.file_based_convert_examples_to_features(
+            train_examples, emb_tokens, label_list, lower=FLAGS.lower,
+            output_file=os.path.join(FLAGS.ckpt_path, "train.tf_record"))
+    data_api.file_based_convert_examples_to_features(
+            dev_examples, emb_tokens, label_list, lower=FLAGS.lower,
+            output_file=os.path.join(FLAGS.ckpt_path,"dev.tf_record"))
+    '''
+    train_input_fn = data_api.file_based_input_fn_builder(
+            input_file=os.path.join(FLAGS.ckpt_path, "train.tf_record"), 
+            is_training=True, batch_size=32)
+    dev_input_fn = data_api.file_based_input_fn_builder(
+            input_file=os.path.join(FLAGS.ckpt_path, "dev.tf_record"), 
+            is_training=False, batch_size=32)
+    
+    def eval_by_conlleval(in_data):
+        results = []
+        preds = model.predict(input_fn=functools.partial(input_fn, in_data=in_data))
+        for idx, item in enumerate(zip(in_data, preds)):
+            chars = item[0].text
+            gold = item[0].label
+            pred = [label_list[int(x)] for x in item[1]["preds"][:len(gold)]]
+            
+            result = [" ".join([char_item, gold_item, pred_item]) 
+                      for char_item, gold_item, pred_item in zip(chars, gold, pred)]
+            
+            results.append(result)
         
-        result = [" ".join([char_item, gold_item, pred_item]) 
-                  for char_item, gold_item, pred_item in zip(chars, gold, pred)]
+        eval_lines = test_ner(results, FLAGS.ckpt_path)
         
-        results.append(result)
+        for line in eval_lines:
+            tf.logging.info(line)
     
-    eval_lines = test_ner(results, "./result")
-    
-    for line in eval_lines:
-        tf.logging.info(line)
+    # Train and evaluate model.
+    for epoch_id in range(FLAGS.max_epoch):
+        tf.logging.info("================= epoch_id:{} =================".format(epoch_id))
+        model.train(input_fn=train_input_fn)
+        eval_results = model.evaluate(input_fn=functools.partial(input_fn, in_data=dev_data))
+        tf.logging.info('\nEvaluation results:\n\t%s\n' % eval_results)
+        
+        eval_by_conlleval(dev_data)
+        # eval_by_conlleval(test_data)
 
-# Train and evaluate model.
-for epoch_id in range(FLAGS.max_epoch):
-    tf.logging.info("================= epoch_id:{} =================".format(epoch_id))
-    model.train(input_fn=functools.partial(input_fn, in_data=train_data, shuffle=True))
-    eval_results = model.evaluate(input_fn=functools.partial(input_fn, in_data=dev_data))
-    print('\nEvaluation results:\n\t%s\n' % eval_results)
-    
-    eval_by_conlleval(dev_data)
-    eval_by_conlleval(test_data)
+
+if __name__ == "__main__":
+    tf.app.run()
