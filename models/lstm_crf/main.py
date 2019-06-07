@@ -11,6 +11,7 @@ from utils.evaluate import test_ner
 FILE_HOME = os.path.abspath(os.path.dirname(__file__))
 
 tf.logging.set_verbosity(tf.logging.INFO)
+tf.logging.propagate = False
 
 flags = tf.app.flags
 flags.DEFINE_integer("seg_dim", 20, "Embedding size for segmentation, 0 if not used")
@@ -159,8 +160,7 @@ def main(args):
     dev_examples = msra.get_dev_examples()
     test_examples = msra.get_test_examples()
     
-    emb_file = "D:/00-Repositories/ChinNER/models/lstm_crf/wiki_100.utf8"
-    with codecs.open(emb_file, mode='r', encoding="utf8") as fr:
+    with codecs.open(FLAGS.emb_file, mode='r', encoding="utf8") as fr:
         _, dim = fr.readline().split()
         emb_tokens = ["<PAD>", "<UNK>"]    # 计算句子长度的时候有用.
         emb_matrix = [np.random.randn(int(dim)), np.random.randn(int(dim))]
@@ -200,6 +200,9 @@ def main(args):
     data_api.file_based_convert_examples_to_features(
             dev_examples, emb_tokens, label_list, lower=FLAGS.lower,
             output_file=os.path.join(FLAGS.ckpt_path,"dev.tf_record"))
+    data_api.file_based_convert_examples_to_features(
+            test_examples, emb_tokens, label_list, lower=FLAGS.lower,
+            output_file=os.path.join(FLAGS.ckpt_path,"test.tf_record"))
     
     train_input_fn = data_api.file_based_input_fn_builder(
             input_file=os.path.join(FLAGS.ckpt_path, "train.tf_record"), 
@@ -207,35 +210,30 @@ def main(args):
     dev_input_fn = data_api.file_based_input_fn_builder(
             input_file=os.path.join(FLAGS.ckpt_path, "dev.tf_record"), 
             is_training=False, batch_size=32)
-    
-    def eval_by_conlleval(in_data):
-        results = []
-        preds = model.predict(input_fn=functools.partial(input_fn, in_data=in_data))
-        for idx, item in enumerate(zip(in_data, preds)):
-            chars = item[0].text
-            gold = item[0].label
-            pred = [label_list[int(x)] for x in item[1]["preds"][:len(gold)]]
-            
-            result = [" ".join([char_item, gold_item, pred_item]) 
-                      for char_item, gold_item, pred_item in zip(chars, gold, pred)]
-            
-            results.append(result)
-        
-        eval_lines = test_ner(results, FLAGS.ckpt_path)
-        
-        for line in eval_lines:
-            tf.logging.info(line)
+    test_input_fn = data_api.file_based_input_fn_builder(
+            input_file=os.path.join(FLAGS.ckpt_path, "test.tf_record"), 
+            is_training=False, batch_size=32)
     
     # Train and evaluate model.
     for epoch_id in range(FLAGS.max_epoch):
         tf.logging.info("================= epoch_id:{} =================".format(epoch_id))
         model.train(input_fn=train_input_fn)
-        eval_results = model.evaluate(input_fn=functools.partial(input_fn, in_data=dev_data))
+        eval_results = model.evaluate(input_fn=dev_input_fn)
         tf.logging.info('\nEvaluation results:\n\t%s\n' % eval_results)
-        
-        eval_by_conlleval(dev_data)
-        # eval_by_conlleval(test_data)
 
+        results = []
+        preds = model.predict(input_fn=dev_input_fn)
+        for idx, item in enumerate(zip(dev_examples, preds)):
+            chars = item[0].text
+            gold = item[0].label
+            pred = [label_list[int(x)] for x in item[1]["preds"][:len(gold)]]
+            result = [" ".join([char_item, gold_item, pred_item]) 
+                      for char_item, gold_item, pred_item in zip(chars, gold, pred)]
+            results.append(result)
+
+        eval_lines = test_ner(results, FLAGS.ckpt_path)
+        for line in eval_lines:
+            tf.logging.info(line)
 
 if __name__ == "__main__":
     tf.app.run()
