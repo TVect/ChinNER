@@ -1,10 +1,6 @@
-import codecs
 import jieba
-import numpy as np
 import tensorflow as tf
-from dataset.msra_ner import MSRA_NER
 
-tf.enable_eager_execution()
 
 class DataHelper:
     
@@ -85,36 +81,3 @@ def file_based_input_fn_builder(input_file, is_training, batch_size,
         return {"char_ids": char_ids, "seg_ids": seg_ids}, label_ids
     
     return input_fn
-
-'''
-msra = MSRA_NER(tagging_schema="iobes")
-train_examples = msra.get_train_examples()
-dev_examples = msra.get_dev_examples()
-test_examples = msra.get_test_examples()
-
-emb_file = "D:/00-Repositories/ChinNER/models/lstm_crf/wiki_100.utf8"
-with codecs.open(emb_file, mode='r', encoding="utf8") as fr:
-    _, dim = fr.readline().split()
-    emb_tokens = ["<UNK>", "<PAD>"]
-    emb_matrix = [np.random.randn(int(dim)), np.random.randn(int(dim))]
-    contents = [line.strip().split() for line in fr]
-    emb_tokens.extend([content[0] for content in contents])
-    emb_matrix.extend([list(map(float, content[1:])) for content in contents])
-    emb_matrix = np.array(emb_matrix)
-
-file_based_convert_examples_to_features(train_examples, 
-                                        emb_tokens, 
-                                        msra.get_labels(), 
-                                        lower=True,
-                                        output_file="train.tf_record")
-
-input_fn = file_based_input_fn_builder(input_file="train.tf_record", 
-                                       is_training=True, batch_size=32)
-
-for features, labels in input_fn():
-    import IPython
-    IPython.embed()
-    exit()
-    print(features["char_ids"].shape)
-    print(features["seg_ids"].shape)
-'''

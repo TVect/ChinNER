@@ -162,7 +162,7 @@ def main(args):
     emb_file = "D:/00-Repositories/ChinNER/models/lstm_crf/wiki_100.utf8"
     with codecs.open(emb_file, mode='r', encoding="utf8") as fr:
         _, dim = fr.readline().split()
-        emb_tokens = ["<UNK>", "<PAD>"]
+        emb_tokens = ["<PAD>", "<UNK>"]    # 计算句子长度的时候有用.
         emb_matrix = [np.random.randn(int(dim)), np.random.randn(int(dim))]
         contents = [line.strip().split() for line in fr]
         emb_tokens.extend([content[0] for content in contents])
@@ -193,14 +193,14 @@ def main(args):
                                    model_dir=FLAGS.ckpt_path, 
                                    config=cfg)
     label_list = msra.get_labels()
-    '''
+    
     data_api.file_based_convert_examples_to_features(
             train_examples, emb_tokens, label_list, lower=FLAGS.lower,
             output_file=os.path.join(FLAGS.ckpt_path, "train.tf_record"))
     data_api.file_based_convert_examples_to_features(
             dev_examples, emb_tokens, label_list, lower=FLAGS.lower,
             output_file=os.path.join(FLAGS.ckpt_path,"dev.tf_record"))
-    '''
+    
     train_input_fn = data_api.file_based_input_fn_builder(
             input_file=os.path.join(FLAGS.ckpt_path, "train.tf_record"), 
             is_training=True, batch_size=32)
