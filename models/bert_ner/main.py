@@ -339,7 +339,7 @@ def main():
     train_examples = msra.get_train_examples()
     dev_examples = msra.get_dev_examples()
     test_examples = msra.get_test_examples()
-    
+
     num_train_steps = int(len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
@@ -398,18 +398,19 @@ def main():
             seq_length=FLAGS.max_seq_length,
             is_training=False,
             drop_remainder=True)
-        preds = estimator.predict(input_fn=test_input_fn)
+        preds = estimator.predict(input_fn=dev_input_fn)
         
         from utils.evaluate import test_ner
         results = []
-        for idx, item in enumerate(zip(test_examples, preds)):
+        for idx, item in enumerate(zip(dev_examples, preds)):
             chars = item[0].text
             gold = item[0].label
             pred = [label_list[int(x)] for x in item[1][1:len(gold)+1]]
-        
+            
+            if len(chars) != len(pred):
+                pred = pred + ["O" for _ in range(len(chars) - len(pred))]
             result = [" ".join([char_item, gold_item, pred_item]) 
                   for char_item, gold_item, pred_item in zip(chars, gold, pred)]
-        
             results.append(result)
     
         eval_lines = test_ner(results, FLAGS.output_dir)
