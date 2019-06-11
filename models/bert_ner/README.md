@@ -1,5 +1,20 @@
 # 结果
 
+## 使用说明
+
+1. 下载预训练的 BERT Model: [BERT-Base, Chinese](https://storage.googleapis.com/bert_models/2018_11_03/chinese_L-12_H-768_A-12.zip). 解压到 bert_models 文件夹中. 
+最终的目录结构如下:
+```
+├── bert
+├── bert_models
+│   └── chinese_L-12_H-768_A-12
+├── ...
+└── ...
+```
+
+2. 进入项目根目录下, 执行 `bash run_bert.sh`
+
+
 ## BERT + Softmax
 
 - *dev_set*
