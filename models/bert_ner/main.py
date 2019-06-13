@@ -378,7 +378,7 @@ def main():
             input_file=train_file,
             seq_length=FLAGS.max_seq_length,
             is_training=True,
-            drop_remainder=True)
+            drop_remainder=False)
         estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
     else:
         dev_file = os.path.join(FLAGS.output_dir, "dev.tf_record")    
@@ -392,31 +392,35 @@ def main():
             input_file=dev_file,
             seq_length=FLAGS.max_seq_length,
             is_training=False,
-            drop_remainder=True)
+            drop_remainder=False)
         test_input_fn = file_based_input_fn_builder(
             input_file=test_file,
             seq_length=FLAGS.max_seq_length,
             is_training=False,
-            drop_remainder=True)
-        preds = estimator.predict(input_fn=dev_input_fn)
+            drop_remainder=False)
+        dev_preds_output = estimator.predict(input_fn=dev_input_fn)
+        test_preds_output = estimator.predict(input_fn=test_input_fn)
         
-        from utils.evaluate import test_ner
-        results = []
-        for idx, item in enumerate(zip(dev_examples, preds)):
-            chars = item[0].text
-            gold = item[0].label
-            pred = [label_list[int(x)] for x in item[1][1:len(gold)+1]]
-            
-            if len(chars) != len(pred):
-                pred = pred + ["O" for _ in range(len(chars) - len(pred))]
-            result = [" ".join([char_item, gold_item, pred_item]) 
-                  for char_item, gold_item, pred_item in zip(chars, gold, pred)]
-            results.append(result)
-    
-        eval_lines = test_ner(results, FLAGS.output_dir)
-    
-        for line in eval_lines:
-            tf.logging.info(line)
+        def evaluate_ner(examples, preds_output):
+            from utils.evaluate import evaluate_with_conlleval
+            texts = [example.text for example in examples]
+            golds = [example.label for example in examples]
+            preds = []
+            for idx, pred in enumerate(preds_output):
+                gold_length = len(golds[idx])
+                pred = [label_list[int(x)] for x in pred[1:gold_length+1]]
+                if gold_length != len(pred):
+                    pred = pred + ["O" for _ in range(gold_length - len(pred))]
+                preds.append(pred)
+            eval_lines = evaluate_with_conlleval(texts, golds, preds, 
+                        os.path.join(FLAGS.output_dir, "ner_predict.txt"))
+
+            for line in eval_lines:
+                tf.logging.info(line)
+
+        evaluate_ner(dev_examples, dev_preds_output)
+        evaluate_ner(test_examples, test_preds_output)
+
 
 if __name__ == "__main__":
     main()

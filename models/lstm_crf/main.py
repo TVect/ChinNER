@@ -6,7 +6,7 @@ import functools
 import codecs
 from models.lstm_crf import data_api
 from dataset.msra_ner import MSRA_NER
-from utils.evaluate import test_ner
+from utils.evaluate import evaluate_with_conlleval
 
 FILE_HOME = os.path.abspath(os.path.dirname(__file__))
 
@@ -33,7 +33,7 @@ flags.DEFINE_integer("max_epoch", 200, "maximum training epochs")
 flags.DEFINE_integer("steps_check", 1000, "steps per checkpoint")
 flags.DEFINE_integer("steps_summary", 100, "steps per summary")
 flags.DEFINE_integer("steps_logging", 100, "steps per summary")
-flags.DEFINE_integer("batch_size", 20, "batch size")
+flags.DEFINE_integer("batch_size", 32, "batch size")
 # flags.DEFINE_integer("epochs_between_evals", 1, "The number of training epochs to run between evaluations.")
 
 flags.DEFINE_string("ckpt_path", 
@@ -81,23 +81,23 @@ def model_fn(features, labels, mode, params):
     is_training = (mode == tf.estimator.ModeKeys.TRAIN)
     lstm_input = tf.layers.dropout(embed, rate=params["dropout_rate"], 
                                    training=is_training)
-    '''
+    
     def gen_lstm_cell():
         return tf.nn.rnn_cell.DropoutWrapper(
             tf.contrib.rnn.LSTMCell(num_units=int((params["char_dim"] + params["seg_dim"]) / 2), 
+                                    initializer=tf.contrib.layers.xavier_initializer(),
                                     use_peepholes=True), 
             output_keep_prob=params["rnn_dropout_rate"])
-    lstm_output, _, _ = tf.contrib.rnn.stack_bidirectional_dynamic_rnn(
+    lstm_output, output_state_fw, output_state_bw = tf.contrib.rnn.stack_bidirectional_dynamic_rnn(
         [gen_lstm_cell() for _ in range(params["num_lstm_layers"])], 
         [gen_lstm_cell() for _ in range(params["num_lstm_layers"])], 
         inputs=lstm_input, 
         sequence_length=in_lengths,
         dtype=tf.float32)
-    '''
-    fw_cell = tf.contrib.rnn.CoupledInputForgetGateLSTMCell(100, use_peepholes=True, initializer=tf.contrib.layers.xavier_initializer(), state_is_tuple=True)
-    bw_cell = tf.contrib.rnn.CoupledInputForgetGateLSTMCell(100, use_peepholes=True, initializer=tf.contrib.layers.xavier_initializer(), state_is_tuple=True)
-    outputs, final_states = tf.nn.bidirectional_dynamic_rnn(fw_cell, bw_cell, lstm_input, dtype=tf.float32, sequence_length=in_lengths)
-    lstm_output = tf.concat(outputs, axis=2)
+    # fw_cell = tf.contrib.rnn.CoupledInputForgetGateLSTMCell(100, use_peepholes=True, initializer=tf.contrib.layers.xavier_initializer(), state_is_tuple=True)
+    # bw_cell = tf.contrib.rnn.CoupledInputForgetGateLSTMCell(100, use_peepholes=True, initializer=tf.contrib.layers.xavier_initializer(), state_is_tuple=True)
+    # outputs, final_states = tf.nn.bidirectional_dynamic_rnn(fw_cell, bw_cell, lstm_input, dtype=tf.float32, sequence_length=in_lengths)
+    # lstm_output = tf.concat(outputs, axis=2)
 
     dense_hidden = tf.layers.dense(lstm_output, 100, activation=tf.nn.tanh, kernel_initializer=tf.contrib.layers.xavier_initializer())
     dense_output = tf.layers.dense(dense_hidden, params["num_tags"], kernel_initializer=tf.contrib.layers.xavier_initializer())
@@ -206,14 +206,28 @@ def main(args):
     
     train_input_fn = data_api.file_based_input_fn_builder(
             input_file=os.path.join(FLAGS.ckpt_path, "train.tf_record"), 
-            is_training=True, batch_size=32)
+            is_training=True, batch_size=FLAGS.batch_size)
     dev_input_fn = data_api.file_based_input_fn_builder(
             input_file=os.path.join(FLAGS.ckpt_path, "dev.tf_record"), 
-            is_training=False, batch_size=32)
+            is_training=False, batch_size=FLAGS.batch_size)
     test_input_fn = data_api.file_based_input_fn_builder(
             input_file=os.path.join(FLAGS.ckpt_path, "test.tf_record"), 
-            is_training=False, batch_size=32)
-    
+            is_training=False, batch_size=FLAGS.batch_size)
+   
+    def evaluate_ner(examples, preds_output):
+        texts = [example.text for example in examples]
+        golds = [example.label for example in examples]
+        preds = []
+        for idx, pred in enumerate(preds_output):
+            gold_length = len(golds[idx])
+            pred = [label_list[int(x)] for x in pred["preds"][:gold_length]]
+            preds.append(pred)
+        eval_lines = evaluate_with_conlleval(texts, golds, preds, 
+                        os.path.join(FLAGS.ckpt_path, "ner_predict.txt"))
+
+        for line in eval_lines:
+            tf.logging.info(line)
+
     # Train and evaluate model.
     for epoch_id in range(FLAGS.max_epoch):
         tf.logging.info("================= epoch_id:{} =================".format(epoch_id))
@@ -221,19 +235,9 @@ def main(args):
         eval_results = model.evaluate(input_fn=dev_input_fn)
         tf.logging.info('\nEvaluation results:\n\t%s\n' % eval_results)
 
-        results = []
-        preds = model.predict(input_fn=dev_input_fn)
-        for idx, item in enumerate(zip(dev_examples, preds)):
-            chars = item[0].text
-            gold = item[0].label
-            pred = [label_list[int(x)] for x in item[1]["preds"][:len(gold)]]
-            result = [" ".join([char_item, gold_item, pred_item]) 
-                      for char_item, gold_item, pred_item in zip(chars, gold, pred)]
-            results.append(result)
+        evaluate_ner(dev_examples, model.predict(input_fn=dev_input_fn))
+        evaluate_ner(test_examples, model.predict(input_fn=test_input_fn))
 
-        eval_lines = test_ner(results, FLAGS.ckpt_path)
-        for line in eval_lines:
-            tf.logging.info(line)
 
 if __name__ == "__main__":
     tf.app.run()
