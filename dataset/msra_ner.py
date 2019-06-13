@@ -5,7 +5,6 @@ from __future__ import print_function
 import os
 import codecs
 import tarfile
-import logging
 from collections import namedtuple
 from sklearn.model_selection import train_test_split
 from utils import tagging_utils
@@ -30,14 +29,10 @@ class MSRA_NER:
         if not os.path.exists(self.dataset_dir):
             with tarfile.open(os.path.join(DATA_HOME, "msra.tar.gz"), "r:gz") as tar:
                 tar.extractall(path=DATA_HOME)
-        else:
-            logging.info("Dataset {} already cached.".format(self.dataset_dir))
 
         self.train_examples, self.dev_examples = train_test_split(
-            self._load_train_examples(), test_size=3000, random_state=17)
+            self._load_train_examples(), test_size=3000, random_state=17, shuffle=True)
         self.test_examples = self._load_test_examples()
-        logging.info("train examples cnt: {}, test examples cnt: {}"
-                     .format(len(self.train_examples), len(self.test_examples)))
 
     def _load_train_examples(self):
         train_file = os.path.join(self.dataset_dir, "msra_train_bio")

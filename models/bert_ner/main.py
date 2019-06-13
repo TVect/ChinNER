@@ -340,6 +340,20 @@ def main():
     dev_examples = msra.get_dev_examples()
     test_examples = msra.get_test_examples()
 
+    from utils.sentence_cutter import segment_sentence
+    from collections import namedtuple
+    def example_preprocess(examples):
+        processed_examples = []
+        NERItemClass = namedtuple('NERItemClass',['text', 'label'])
+        for example in examples:
+            for item in segment_sentence(example.text, example.label):
+                processed_examples.append(NERItemClass(text=item[0], label=item[1]))
+        return processed_examples
+
+    train_examples = example_preprocess(train_examples)
+    dev_examples = example_preprocess(dev_examples)
+    test_examples = example_preprocess(test_examples)
+
     num_train_steps = int(len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
@@ -364,8 +378,8 @@ def main():
             num_warmup_steps=num_warmup_steps,
             use_tpu=FLAGS.use_tpu,
             use_one_hot_embeddings=FLAGS.use_tpu)
-    cfg = tf.estimator.RunConfig(save_checkpoints_steps=10, 
-                                     save_summary_steps=100, log_step_count_steps=1)
+    cfg = tf.estimator.RunConfig(save_checkpoints_steps=100, 
+                                 save_summary_steps=100, log_step_count_steps=10)
     estimator = tf.estimator.Estimator(model_fn=model_fn,  
                                            model_dir=FLAGS.output_dir, 
                                            params={"batch_size": 32},

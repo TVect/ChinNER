@@ -19,27 +19,27 @@
 - *dev_set*
 
 ```
-INFO:tensorflow:processed 139524 tokens with 4817 phrases; found: 4876 phrases; correct: 4618.
+INFO:tensorflow:processed 142957 tokens with 4911 phrases; found: 4950 phrases; correct: 4719.
 
-INFO:tensorflow:accuracy:  99.41%; precision:  94.71%; recall:  95.87%; FB1:  95.29
+INFO:tensorflow:accuracy:  99.44%; precision:  95.33%; recall:  96.09%; FB1:  95.71
 
-INFO:tensorflow:              LOC: precision:  95.49%; recall:  96.59%; FB1:  96.04  2373
+INFO:tensorflow:              LOC: precision:  95.81%; recall:  96.56%; FB1:  96.19  2435
 
-INFO:tensorflow:              ORG: precision:  89.58%; recall:  92.31%; FB1:  90.92  1286
+INFO:tensorflow:              ORG: precision:  90.66%; recall:  92.73%; FB1:  91.68  1295
 
-INFO:tensorflow:              PER: precision:  98.60%; recall:  98.12%; FB1:  98.36  1217
+INFO:tensorflow:              PER: precision:  99.34%; recall:  98.62%; FB1:  98.98  1220
 ```
 
 - *test_set*
 
 ```
-INFO:tensorflow:processed 162275 tokens with 5342 phrases; found: 5352 phrases; correct: 5080.
+INFO:tensorflow:processed 172601 tokens with 6200 phrases; found: 6204 phrases; correct: 5878.
 
-INFO:tensorflow:accuracy:  99.39%; precision:  94.92%; recall:  95.10%; FB1:  95.01
+INFO:tensorflow:accuracy:  99.39%; precision:  94.75%; recall:  94.81%; FB1:  94.78
 
-INFO:tensorflow:              LOC: precision:  96.53%; recall:  95.26%; FB1:  95.89  2708
+INFO:tensorflow:              LOC: precision:  96.02%; recall:  94.42%; FB1:  95.21  2838
 
-INFO:tensorflow:              ORG: precision:  90.33%; recall:  93.29%; FB1:  91.79  1293
+INFO:tensorflow:              ORG: precision:  89.97%; recall:  93.01%; FB1:  91.47  1376
 
-INFO:tensorflow:              PER: precision:  96.08%; recall:  96.43%; FB1:  96.26  1351
+INFO:tensorflow:              PER: precision:  96.23%; recall:  96.57%; FB1:  96.40  1990
 ```
