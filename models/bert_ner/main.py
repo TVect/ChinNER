@@ -1,7 +1,9 @@
 import os
 import collections
+import tf_metrics
 import tensorflow as tf
 from .bert import tokenization, modeling, optimization
+from tensorflow.contrib.boosted_trees.python.utils.losses import per_example_exp_loss
 
 
 tf.enable_eager_execution()
@@ -45,6 +47,7 @@ flags.DEFINE_integer(
     "Sequences longer than this will be truncated, and sequences shorter "
     "than this will be padded.")
 
+flags.DEFINE_bool("use_crf", False, "Whether to use crf_layer")
 flags.DEFINE_bool("do_train", True, "Whether to run training.")
 flags.DEFINE_bool("do_eval", False, "Whether to run eval on the dev set.")
 flags.DEFINE_bool("do_predict", False, "Whether to run in inference mode on the test set.")
@@ -231,7 +234,7 @@ def file_based_input_fn_builder(input_file, seq_length, is_training,
     return input_fn
 
 def create_model(bert_config, is_training, input_ids, input_mask,
-                 segment_ids, labels, num_labels, use_one_hot_embeddings):
+                 segment_ids, labels, num_labels, use_crf):
     model = modeling.BertModel(
         config=bert_config,
         is_training=is_training,
@@ -247,17 +250,30 @@ def create_model(bert_config, is_training, input_ids, input_mask,
             output_layer = tf.nn.dropout(output_layer, keep_prob=0.9)
         logits = tf.layers.dense(output_layer, num_labels, activation=None, 
                                  kernel_initializer=tf.truncated_normal_initializer(stddev=0.02))
-        probabilities = tf.nn.softmax(logits)
-
-        if labels is not None:
-            one_hot_labels = tf.one_hot(labels, depth=num_labels, dtype=tf.float32)
-            loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=logits)
-            loss = tf.multiply(loss, tf.cast(input_mask, tf.float32))
-            per_example_loss = tf.reduce_sum(loss, axis=-1)
-            loss = tf.reduce_mean(per_example_loss)
+        if FLAGS.use_crf:
+            transition_params = tf.get_variable(name="transitions", 
+                                        shape=[num_labels, num_labels],       
+                                        initializer=tf.contrib.layers.xavier_initializer())
+            in_lengths = tf.reduce_sum(input_mask, axis=-1)
+            predictions, _ = tf.contrib.crf.crf_decode(logits, transition_params, in_lengths)
+            
+            if labels is not None:
+                log_likelihood, _ = tf.contrib.crf.crf_log_likelihood(
+                    logits, labels, in_lengths, transition_params=transition_params)
+                loss = tf.reduce_mean(-log_likelihood)
+            else:
+                loss = None
         else:
-            loss, per_example_loss = None, None
-    return (loss, per_example_loss, logits, probabilities)
+            # probabilities = tf.nn.softmax(logits)
+            predictions = tf.argmax(probabilities, axis=-1)
+            if labels is not None:
+                one_hot_labels = tf.one_hot(labels, depth=num_labels, dtype=tf.float32)
+                loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=logits)
+                loss = tf.multiply(loss, tf.cast(input_mask, tf.float32))
+                loss = tf.reduce_mean(tf.reduce_sum(loss, axis=-1))
+            else:
+                loss = None
+    return (loss, predictions)
 
 def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
                      num_train_steps, num_warmup_steps, use_tpu,
@@ -277,9 +293,9 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
         is_training = (mode == tf.estimator.ModeKeys.TRAIN)
 
         # 使用参数构建模型,input_idx 就是输入的样本idx表示，label_ids 就是标签的idx表示
-        total_loss, logits, trans, pred_ids = create_model(
+        total_loss, pred_ids = create_model(
             bert_config, is_training, input_ids, input_mask, 
-            segment_ids, label_ids, num_labels, False)
+            segment_ids, label_ids, num_labels, use_crf=FLAGS.use_crf)
 
         tvars = tf.trainable_variables()
         # 加载BERT模型
@@ -307,22 +323,23 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
                 training_hooks=[logging_hook])
 
         elif mode == tf.estimator.ModeKeys.EVAL:
-            # 针对NER ,进行了修改
-            def metric_fn(label_ids, pred_ids):
-                return {
-                    "eval_loss": tf.metrics.mean_squared_error(labels=label_ids, predictions=pred_ids),
-                }
+            indices = list(range(1, num_labels))
+            metrics = {
+                'accuracy': tf.metrics.accuracy(labels, predictions, input_mask), 
+                'precision': tf_metrics.precision(labels, predictions, num_labels, indices, input_mask), 
+                'recall': tf_metrics.recall(labels, predictions, num_labels, indices, input_mask), 
+                'f1': tf_metrics.f1(labels, predictions, num_labels, indices, input_mask)
+            }
 
-            eval_metrics = metric_fn(label_ids, pred_ids)
             output_spec = tf.estimator.EstimatorSpec(
                 mode=mode,
                 loss=total_loss,
-                eval_metric_ops=eval_metrics
+                eval_metric_ops=metrics
             )
         else:
             output_spec = tf.estimator.EstimatorSpec(
                 mode=mode,
-                predictions=tf.argmax(pred_ids, axis=-1)
+                predictions=pred_ids
             )
         return output_spec
 

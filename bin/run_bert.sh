@@ -8,6 +8,7 @@ python -m models.bert_ner.main \
     --do_eval=True   \
     --do_predict=True \
     --data_dir=data   \
+    --use_crf=False    \
     --max_seq_length=128   \
     --train_batch_size=32   \
     --learning_rate=2e-5   \
