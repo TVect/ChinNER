@@ -265,7 +265,7 @@ def create_model(bert_config, is_training, input_ids, input_mask,
                 loss = None
         else:
             # probabilities = tf.nn.softmax(logits)
-            predictions = tf.argmax(probabilities, axis=-1)
+            predictions = tf.argmax(logits, axis=-1)
             if labels is not None:
                 one_hot_labels = tf.one_hot(labels, depth=num_labels, dtype=tf.float32)
                 loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=logits)
