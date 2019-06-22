@@ -2,6 +2,7 @@
 
 import os
 import collections
+import optparse
 import tensorflow as tf
 from .data_helper import DataProcessor
 
@@ -29,13 +30,22 @@ class ServingClient:
         return ret_tags
 
 if __name__ == "__main__":
+    parser = optparse.OptionParser(usage='"usage:%prog [options] arg1,arg2"')
+    parser.add_option('-m', '--model_path',dest='model_path', action='store', 
+                     type=str, help='path to model')
+    parser.add_option('-p', '--processor_file',dest='processor_file', action='store', 
+                     type=str, help='path to processor_file')
+    options, args = parser.parse_args()
+    '''
     FILE_HOME = os.path.abspath(os.path.dirname(__file__))
     model_path = os.path.join(FILE_HOME, "./output/1560850786")
     processor_file = os.path.join(FILE_HOME, "./output/data_processor.json")
     data_processor = DataProcessor.load_from_file(processor_file)
-    
+    '''
+    data_processor = DataProcessor.load_from_file(options.processor_file)
+    client = ServingClient(options.model_path, data_processor)
+
     texts = [list("老一代红军将领孙毅将军为我们展示的北京市地图")]
-    client = ServingClient(model_path, data_processor)
     ret_tags = client.predict(texts)
     for text, tag in zip(texts, ret_tags): 
         for item in zip(texts, ret_tags): 
